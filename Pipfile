@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+django = "*"
+psycopg2-binary = "*"
+pre-commit = "*"
+django-allauth = "*"
+djangorestframework = "*"
+python-dotenv = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.10"
+python_full_version = "3.10.7"
+
+[scripts]
+up = "docker compose up -d"
+start = "python3 manage.py runserver"
