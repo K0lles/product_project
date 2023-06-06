@@ -30,9 +30,9 @@ class BaseDefiner:
         """
         for field in self.fields:
             if not self._response.get(self.enum_class[field].value[1], None):
-                self._response[self.enum_class[field].value[1]] = [{field: self.enum_class[field].value[0]}]
+                self._response[self.enum_class[field].value[1]] = {field: self.enum_class[field].value[0]}
                 continue
-            self._response[self.enum_class[field].value[1]].append({field: self.enum_class[field].value[0]})
+            self._response[self.enum_class[field].value[1]].update({field: self.enum_class[field].value[0]})
 
     @property
     def is_valid(self) -> bool:

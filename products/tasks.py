@@ -1,14 +1,12 @@
 import datetime
-import urllib
 
 import pytz
 import requests
-from django.core.files import File
 
 from product_project import app
 from product_project.settings import AUTH_TOKEN
-from products.functions import get_image_base64md5, parse_image
-from products.models import Image, Product
+from products.functions import update_image_model, update_product_model
+from products.models import Image, ImageRemote, Product, ProductRemote
 
 kyiv_timezone = pytz.timezone('Europe/Kiev')
 
@@ -16,14 +14,14 @@ kyiv_timezone = pytz.timezone('Europe/Kiev')
 @app.task
 def renew_database() -> None:
     print(f'Starting updating database {datetime.datetime.now(tz=kyiv_timezone)}...')
-    barcode_list: list = [str(item[0]) for item in Product.objects.filter(creator__isnull=True)]
+    barcode_list: list = [str(item[0]) for item in ProductRemote.objects.all().values_list('value')]
     barcodes_to_request: str = ','.join(barcode_list)
-    response = requests.get(f'https://ps-dev.datawiz.io/uk/api/v1/barcode/?value={barcodes_to_request}',
-                            headers={
-                                'Authorization': AUTH_TOKEN
-                            })
+    response_photo = requests.get(f'https://ps-dev.datawiz.io/uk/api/v1/barcode/?value={barcodes_to_request}',
+                                  headers={
+                                      'Authorization': AUTH_TOKEN
+                                  })
 
-    response_data: list = response.json()
+    response_data: list = response_photo.json()
 
     images = []
 
@@ -39,44 +37,12 @@ def renew_database() -> None:
                 })
         del column['images']
 
-    for item in response_data:
-        product_value = item['value']
-        try:
-            product = Product.objects.get(value=product_value)
-            product.name = item['name']
-            product.measure_date = item['measure_date']
-            product.width = item['width']
-            product.height = item['height']
-            product.depth = item['depth']
-            product.save()
-        except Product.DoesNotExist:
-            Product.objects.create(
-                **item
-            )
+    # updating remote databases firstly
+    print('Updating remote databases...')
+    update_product_model(ProductRemote, response_data)
+    update_image_model(ImageRemote, images)
 
-    for item in images:
-        image_alt = item['alt']
-        image_product = item['product']
-        try:
-            image = Image.objects.get(product=image_product, alt=image_alt)
-            if image.hash != item['hash']:
-                response = urllib.request.urlopen(item['photo'])
-                image_io = parse_image(response.read())
-
-                # update photo
-                image_hash: str = get_image_base64md5(image_io)
-                image.hash = image_hash
-                image.alt = item['alt']
-                image.photo.save(f'image-{item["product"]}-{image_alt}.jpg', File(image_io))
-                image.save()
-        except Image.DoesNotExist:
-            response = urllib.request.urlopen(item['photo'])
-            image_io = parse_image(response.read())
-
-            image_hash = get_image_base64md5(image_io)
-            img_to_save = Image(
-                product_id=item['product'],
-                alt=item['alt'],
-                hash=image_hash
-            )
-            img_to_save.photo.save(f'image-{item["product"]}.jpg', File(image_io))
+    # updating customer's databases afterward
+    print('Updating local databases...')
+    update_product_model(Product, response_data, use_creators=True)
+    update_image_model(Image, images)

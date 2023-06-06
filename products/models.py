@@ -32,7 +32,6 @@ class ImageManager(models.Manager):
         return super().bulk_create(objs, batch_size=batch_size, ignore_conflicts=ignore_conflicts)
 
     def validate_images(self, objs):
-        # Perform your validation logic here
         for obj in objs:
             # Check for duplicate images with the same product and alt
             if self.filter(product=obj.product, alt=obj.alt).exists():
