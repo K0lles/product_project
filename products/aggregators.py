@@ -16,8 +16,6 @@ class BaseAggregator:
 
         self.exclusion: dict[str, list] = {}
 
-        # self.post_field_renaming: list[list[dict[Any, dict]]] = \
-        #     [[{key: {}} for key in item.keys()] for item in self.fields]
         self.process_fields()
 
     def process_fields(self):

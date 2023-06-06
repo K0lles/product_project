@@ -46,8 +46,7 @@ def update_image_model(model: Type[ImageModelMixin], images: list) -> None:
         try:
             image = model.objects.get(product=image_product, alt=image_alt)
             if image.hash != item['hash']:
-                response_photo = urllib.request.urlopen(item['photo'])
-                image_io = parse_image(response_photo.read())
+                image_io = parse_image(item['photo'])
 
                 # update photo
                 image_hash: str = get_image_base64md5(image_io)

@@ -15,6 +15,7 @@ from products.models import Product
 from products.paginators import CustomPageNumberPagination
 from products.serializers import (ProductCreateUpdateSerializer,
                                   ProductListSerializer)
+from products.tasks import update_certain_products
 
 
 class ProductViewSet(ModelViewSet):
@@ -29,40 +30,47 @@ class ProductViewSet(ModelViewSet):
     def get_my_queryset(self) -> QuerySet:
         return Product.objects.filter(creator=self.request.user)
 
+    def get_by_value_queryset(self) -> QuerySet:
+        return Product.objects.filter(value__in=self.value)
+
     def get_changed_product_querysets(self, agg: BaseAggregator) -> dict[Type[Model], QuerySet]:
         queries = {}
 
         for model in agg.response.get('annotations').keys():
             value_field: str = ComparisonModelEnum.get_value_field(model) + '__in'
-            queries[model] = model.objects.filter(**{value_field: self.request.query_params.getlist('value')})\
+            queries[model] = model.objects.filter(**{value_field: self.value})\
                 .annotate(**agg.response['annotations'][model])
 
         return queries
-        # post_filtering_conditions: Q = Q(width__ne=F('product_remote__width'))
-        # post_filtering_conditions.add(Q(height__ne=F('product_remote__height')), Q.OR)
-        # post_filtering_conditions.add(Q(depth__ne=F('product_remote__depth')), Q.OR)
-        # query = Product.objects.filter(value__in=self.request.query_params.getlist('value')).annotate(
-        #     product_remote__width=Subquery(
-        #         ProductRemote.objects.filter(value=OuterRef('value')).values('width')[:1]
-        #     )
-        # )
-        # query.exclude(
-        #     Q(product_remote__width__isnull=False) & Q(width=F('product_remote__width'))
-        # )
-        # return query
-        # Product.objects.filter(value__in=self.request.query_params.getlist('value')).annotate(
-        #     product_remote=Subquery(
-        #         ProductRemote.objects.filter(value=OuterRef('value')).values()[:1]
-        #     )
-        # )\
-        #     .filter(post_filtering_conditions)
 
     def resolve_querysets_to_response(self, query_dict: dict[Type[Model], QuerySet], agg: BaseAggregator,
                                       definer_response: dict):
         response: dict = {}
         for model, dct in definer_response.items():
             for key in dct.keys():
-                response[key] = query_dict[model].exclude(*agg.response['exclusions'][key]).values()
+                auxiliary_model: Type[Model] = ComparisonModelEnum.get_comparison_model(model)
+                auxiliary_model_name: str = auxiliary_model.__name__.lower()
+
+                # exclude from each query not changed instances
+                response[key] = query_dict[model].exclude(*agg.response['exclusions'][key])\
+                    .values(
+                        *ComparisonModelEnum.get_core_fields(model),
+                        *dct[key],
+                        *[f'{auxiliary_model_name}__{item}' for item in dct[key]]
+                )
+
+                # deleting extra fields from list of values
+                for instance in response[key]:
+                    for field_name in dct[key]:
+                        field_value = instance[field_name]
+                        related_field_name = f'{auxiliary_model_name}__{field_name}'
+                        related_field_value = instance[related_field_name]
+
+                        if field_value == related_field_value:
+                            del instance[field_name]
+                            del instance[related_field_name]
+
+                response[key] = list(response[key])
 
         return response
 
@@ -108,26 +116,38 @@ class ProductViewSet(ModelViewSet):
 
     @action(methods=['GET'], detail=False, url_path='compare')
     def get_comparison(self, request, *args, **kwargs):
-        value = request.query_params.getlist('value')
-        types = request.query_params.getlist('types')
+        try:
+            self.value = request.query_params.getlist('value')[0].split(',')
+            fields = request.query_params.getlist('fields')[0].split(',')
+        except (IndexError, AttributeError):
+            return Response({'detail': _('Перевірте правильність вибраних штрих-кодів та полів.')})
 
-        if not value or types:
+        if not self.value or not fields:
             return Response({'detail': _('Укажіть поля та штрих-коди для порівняння.')})
 
-        definer = self.definer_class(self.request.query_params.getlist('types'))
+        definer = self.definer_class(fields)
         if definer.is_valid:
             definer_response: dict = definer.response
             agg = self.aggregator_class(definer_response)
             query_dict = self.get_changed_product_querysets(agg)
-            print(query_dict)
-            # products = Product.objects.filter(value__in=value).values()
-            # print(definer_response)
-            # products_df: pd.DataFrame = pd.DataFrame(list(products))
-            # remote_products = requests.get(
-            #     f'https://ps-dev.datawiz.io/uk/api/v1/barcode/?value={self.request.query_params.getlist("value")}')
-            # remote_products_df: pd.DataFrame = pd.DataFrame(remote_products.json())
-            # print(products_df)
-            # print(remote_products_df)
-            return Response({'answer': "ok"}, status=status.HTTP_200_OK)
+            response = self.resolve_querysets_to_response(query_dict, agg, definer_response)
+            return Response(response, status=status.HTTP_200_OK)
+        else:
+            return Response(data=definer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(methods=['POST'], detail=False, url_path='synchronize')
+    def synchronize_product(self, request, *args, **kwargs):
+        try:
+            self.value = request.query_params.getlist('value')[0].split(',')
+            fields = request.query_params.getlist('fields')[0].split(',')
+        except (IndexError, AttributeError):
+            return Response({'detail': _('Перевірте правильність вибраних штрих-кодів та полів.')})
+
+        definer = self.definer_class(fields)
+        if definer.is_valid:
+            definer_response: dict = definer.response
+            queryset_to_synchronize = self.get_by_value_queryset()
+            fields_for_product = [field for field_tuple in definer_response[Product].values() for field in field_tuple]
+            update_certain_products(queryset_to_synchronize, fields_for_product)
         else:
             return Response(data=definer.errors, status=status.HTTP_400_BAD_REQUEST)

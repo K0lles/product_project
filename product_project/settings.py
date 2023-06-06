@@ -162,6 +162,6 @@ AUTH_USER_MODEL = 'users.User'
 CELERY_BEAT_SCHEDULE = {
     'renewing_database': {
         'task': 'products.tasks.renew_database',
-        'schedule': crontab(hour=2, minute=0)
+        'schedule': crontab(hour=10, minute=0)
     }
 }
