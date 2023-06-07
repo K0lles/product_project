@@ -17,6 +17,8 @@ pillow = "*"
 celery = "*"
 django-redis = "*"
 django-debug-toolbar = "*"
+django-rest-swagger = "*"
+drf-spectacular = "*"
 
 [dev-packages]
 

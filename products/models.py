@@ -11,6 +11,10 @@ class ProductModelMixin(models.Model):
     height = models.FloatField()
     depth = models.FloatField()
 
+    @property
+    def is_remote(self) -> bool:
+        return False
+
     class Meta:
         abstract = True
 
@@ -20,7 +24,10 @@ class Product(ProductModelMixin):
 
 
 class ProductRemote(ProductModelMixin):
-    pass
+
+    @property
+    def is_remote(self) -> bool:
+        return True
 
 
 class ImageManager(models.Manager):
@@ -54,6 +61,10 @@ class ImageModelMixin(models.Model):
 
         super().save(*args, **kwargs)
 
+    @property
+    def is_remote(self) -> bool:
+        return False
+
     class Meta:
         abstract = True
 
@@ -64,3 +75,7 @@ class Image(ImageModelMixin):
 
 class ImageRemote(ImageModelMixin):
     product = models.ForeignKey(ProductRemote, on_delete=models.CASCADE)
+
+    @property
+    def is_remote(self) -> bool:
+        return True

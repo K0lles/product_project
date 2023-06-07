@@ -33,7 +33,6 @@ class User(AbstractBaseUser):
 
     is_superuser = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
-    # synchronize_records = models.BooleanField(default=False)
 
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = ['name', 'surname', 'password']

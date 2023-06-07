@@ -1,7 +1,8 @@
-from typing import Type
+from typing import Type, Union
 
 from django.db.models import Model, QuerySet
 from django.utils.translation import gettext_lazy as _
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
@@ -11,11 +12,11 @@ from rest_framework.viewsets import ModelViewSet
 from products.aggregators import BaseAggregator
 from products.definers import ProductDefiner
 from products.enums import ComparisonModelEnum
-from products.models import Product
+from products.models import Image, Product
 from products.paginators import CustomPageNumberPagination
 from products.serializers import (ProductCreateUpdateSerializer,
                                   ProductListSerializer)
-from products.tasks import update_certain_products
+from products.tasks import update_certain_images, update_certain_products
 
 
 class ProductViewSet(ModelViewSet):
@@ -23,22 +24,32 @@ class ProductViewSet(ModelViewSet):
     pagination_class = CustomPageNumberPagination
     definer_class = ProductDefiner
     aggregator_class = BaseAggregator
+    comparison_model_enum_class = ComparisonModelEnum
+    lookup_field = 'value'
 
-    def get_queryset(self) -> QuerySet:
+    def get_queryset(self) -> QuerySet[Product]:
         return Product.objects.prefetch_related('image_set').all()
 
-    def get_my_queryset(self) -> QuerySet:
+    def get_my_queryset(self) -> QuerySet[Product]:
         return Product.objects.filter(creator=self.request.user)
 
-    def get_by_value_queryset(self) -> QuerySet:
-        return Product.objects.filter(value__in=self.value)
+    def get_by_value_queryset(self, model: Type[Model]) -> QuerySet[Union[Product, Image]]:
+        filtration = {self.comparison_model_enum_class.get_value_field(model) + '__in': self.value}
+        return model.objects.filter(**filtration)
 
     def get_changed_product_querysets(self, agg: BaseAggregator) -> dict[Type[Model], QuerySet]:
         queries = {}
 
         for model in agg.response.get('annotations').keys():
-            value_field: str = ComparisonModelEnum.get_value_field(model) + '__in'
-            queries[model] = model.objects.filter(**{value_field: self.value})\
+
+            # if there are any values filter it, otherwise get all records
+            if self.value:
+                value_field: str = self.comparison_model_enum_class.get_value_field(model) + '__in'
+                filtering_condition = {value_field: self.value}
+            else:
+                filtering_condition = {}
+
+            queries[model] = model.objects.filter(**filtering_condition)\
                 .annotate(**agg.response['annotations'][model])
 
         return queries
@@ -48,13 +59,13 @@ class ProductViewSet(ModelViewSet):
         response: dict = {}
         for model, dct in definer_response.items():
             for key in dct.keys():
-                auxiliary_model: Type[Model] = ComparisonModelEnum.get_comparison_model(model)
+                auxiliary_model: Type[Model] = self.comparison_model_enum_class.get_comparison_model(model)
                 auxiliary_model_name: str = auxiliary_model.__name__.lower()
 
                 # exclude from each query not changed instances
                 response[key] = query_dict[model].exclude(*agg.response['exclusions'][key])\
                     .values(
-                        *ComparisonModelEnum.get_core_fields(model),
+                        *self.comparison_model_enum_class.get_core_fields(model),
                         *dct[key],
                         *[f'{auxiliary_model_name}__{item}' for item in dct[key]]
                 )
@@ -76,9 +87,21 @@ class ProductViewSet(ModelViewSet):
 
     def get_object(self):
         try:
-            return Product.objects.get(pk=self.kwargs.get(self.lookup_field))
+            return Product.objects.get(value=self.kwargs.get(self.lookup_field))
         except Product.DoesNotExist:
             raise ValidationError(detail={'detail': _('Не знайдено.')})
+
+    def validate_values(self) -> None:
+        # blank value is admissible
+        try:
+            self.value: list = self.value[0].split(',')
+
+            for value in self.value:
+                if not isinstance(value, str) and not value.isnumeric():
+                    raise ValueError()
+
+        except IndexError:
+            pass
 
     def list(self, request, *args, **kwargs):
         queryset = self.get_queryset()
@@ -114,16 +137,24 @@ class ProductViewSet(ModelViewSet):
         serializer = self.get_serializer(instance=paginated_queryset, many=True)
         return self.get_paginated_response(serializer.data)
 
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name='value', location=OpenApiParameter.QUERY,
+                             description='Values', required=False, type=str),
+            OpenApiParameter(name='fields', location=OpenApiParameter.QUERY,
+                             description='Number of the page of the queryset that will be returned', required=True,
+                             type=str)
+        ]
+    )
     @action(methods=['GET'], detail=False, url_path='compare')
     def get_comparison(self, request, *args, **kwargs):
         try:
-            self.value = request.query_params.getlist('value')[0].split(',')
+            self.value = request.query_params.getlist('value')
+            self.validate_values()
             fields = request.query_params.getlist('fields')[0].split(',')
-        except (IndexError, AttributeError):
-            return Response({'detail': _('Перевірте правильність вибраних штрих-кодів та полів.')})
-
-        if not self.value or not fields:
-            return Response({'detail': _('Укажіть поля та штрих-коди для порівняння.')})
+            fields.sort()
+        except (IndexError, AttributeError, ValueError):
+            return Response({'detail': _('Перевірте правильність введених штрих-кодів та полів.')})
 
         definer = self.definer_class(fields)
         if definer.is_valid:
@@ -135,19 +166,43 @@ class ProductViewSet(ModelViewSet):
         else:
             return Response(data=definer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(name='value', location=OpenApiParameter.QUERY, description='Values',
+                             required=False, type=str),
+            OpenApiParameter(name='fields', location=OpenApiParameter.QUERY,
+                             description='Number of the page of the queryset that will be returned', required=True,
+                             type=str)
+        ]
+    )
     @action(methods=['POST'], detail=False, url_path='synchronize')
-    def synchronize_product(self, request, *args, **kwargs):
+    def synchronize_products_and_images(self, request, *args, **kwargs):
         try:
-            self.value = request.query_params.getlist('value')[0].split(',')
-            fields = request.query_params.getlist('fields')[0].split(',')
-        except (IndexError, AttributeError):
+            self.value = request.query_params.getlist('value')
+            self.validate_values()
+            fields: list = request.query_params.getlist('fields')[0].split(',')
+            fields.sort()
+        except (IndexError, AttributeError, ValueError):
             return Response({'detail': _('Перевірте правильність вибраних штрих-кодів та полів.')})
 
         definer = self.definer_class(fields)
         if definer.is_valid:
+
+            task_for_updating = {
+                Product: update_certain_products,
+                Image: update_certain_images
+            }
+
             definer_response: dict = definer.response
-            queryset_to_synchronize = self.get_by_value_queryset()
-            fields_for_product = [field for field_tuple in definer_response[Product].values() for field in field_tuple]
-            update_certain_products(queryset_to_synchronize, fields_for_product)
+
+            # set null fields for Image in order to perform update of all fields
+            if Image in definer_response.keys():
+                definer_response[Image] = {}
+
+            for model in definer_response.keys():
+                fields = [field for field_tuple in definer_response[model].values() for field in field_tuple]
+                task_for_updating[model].delay(self.value, fields)
+
+            return Response(data={'detail': _('Успішно оновлено.')}, status=status.HTTP_200_OK)
         else:
             return Response(data=definer.errors, status=status.HTTP_400_BAD_REQUEST)

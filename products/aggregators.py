@@ -18,7 +18,7 @@ class BaseAggregator:
 
         self.process_fields()
 
-    def process_fields(self):
+    def process_fields(self) -> None:
         # iterate over type with field names
         for model, dct in self.fields.items():
 

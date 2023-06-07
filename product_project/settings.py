@@ -39,13 +39,15 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
     'rest_framework',
+    'rest_framework_swagger',
     'rest_framework.authtoken',
     'django_extensions',
     'debug_toolbar',
 
     # apps
     'products',
-    'users'
+    'users',
+    'drf_spectacular',
 ]
 
 MIDDLEWARE = [
@@ -97,8 +99,8 @@ DATABASES = {
 
 CACHES = {
     "default": {
-        "BACKEND": "django_redis.cache.RedisCache",
-        "LOCATION": "redis://localhost:6379/1"
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": os.getenv('REDIS_URL')
     }
 }
 
@@ -127,7 +129,8 @@ REST_FRAMEWORK = {
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
-    )
+    ),
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 }
 
 
@@ -162,6 +165,6 @@ AUTH_USER_MODEL = 'users.User'
 CELERY_BEAT_SCHEDULE = {
     'renewing_database': {
         'task': 'products.tasks.renew_database',
-        'schedule': crontab(hour=10, minute=0)
+        'schedule': crontab(minute=0, hour=10)
     }
 }
